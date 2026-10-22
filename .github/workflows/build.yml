@@ -1,0 +1,77 @@
+name: Manual BlissOS 16 Android 13 Kernel Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: yeasin0423/Darkmatter-kernel
+          ref: gloria-nksu
+          submodules: recursive
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc git wget curl xz-utils
+
+      - name: Download Clang Toolchain (r498229b)
+        run: |
+          echo "Setting up clang"
+          mkdir -p clang
+          wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/b782d8e5687a9c7ce9ff1c26221617ac416b6ec8/clang-r498229b.tar.gz"
+          tar -C clang -xf clang.tar.gz
+          rm clang.tar.gz
+          
+      - name: Setup KernelSU-Next
+        run: |
+          echo "Setting up KernelSU-Next..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+          
+      - name: Compile Kernel and Modules
+        run: |
+          export PATH="$(pwd)/clang/bin:$PATH"
+          export ARCH=x86_64
+          
+          mkdir -p "$(pwd)/out"
+          mkdir -p "$(pwd)/out/kernel_modules"
+          
+          INSTALL_PATH="$(pwd)/out/kernel_modules"
+          BUILD_VAR="-j$(nproc) O=$(pwd)/out ARCH=x86_64 LLVM=1 LLVM_IAS=1"
+          
+          echo "Starting kernel configuration..."
+          make $BUILD_VAR android-x86_64_defconfig
+          
+          echo "Enabling KernelSU-Next x86 syscall dispatcher patch..."
+          echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> out/.config
+          make $BUILD_VAR olddefconfig
+          
+          echo "Building kernel image (bzImage)..."
+          make $BUILD_VAR
+          
+          echo "Installing kernel modules..."
+          make $BUILD_VAR INSTALL_MOD_PATH="$INSTALL_PATH" modules_install
+
+      - name: Package and Compress Output
+        run: |
+          echo "Packing final kernel and modules into a clean archive..."
+          mkdir -p package_release
+          cp out/arch/x86/boot/bzImage package_release/
+          cp -r out/kernel_modules package_release/modules
+          
+          cd package_release
+          tar -czvf ../blissos_kernel_ksunext.tar.gz *
+          cd ..
+          
+          echo "Archive size:"
+          ls -lh blissos_kernel_ksunext.tar.gz
+
+      - name: Upload Compressed Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-Kernel-And-Modules-Compressed
+          path: blissos_kernel_ksunext.tar.gz
